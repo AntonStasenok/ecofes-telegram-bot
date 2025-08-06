@@ -8,6 +8,8 @@ from bot.utils.helpers import is_valid_email
 from bot.services.email_sender import send_lead_email
 from bot.services.rag_engine import RAGEngine
 from bot.services.llm_service import query_openrouter
+from bot.services.query_classifier import QueryClassifier
+from bot.services.chat_responses import ChatResponses
 from datetime import datetime
 import logging
 import re
@@ -30,8 +32,10 @@ print(f"🔧 [DEBUG] SUPPORT_CHAT_ID = {SUPPORT_CHAT_ID}")
 # Создание роутера
 router = Router()
 
-# Инициализация RAG-движка (один раз при старте)
+# Инициализация компонентов
 rag_engine = RAGEngine()
+query_classifier = QueryClassifier()
+chat_responses = ChatResponses()
 
 # ========================= КЛАВИАТУРЫ =========================
 
@@ -327,7 +331,7 @@ async def handle_manager_reply(message: Message):
 
 @router.message(F.text)
 async def handle_all_text_messages(message: Message, state: FSMContext):
-    """Единый обработчик всех текстовых сообщений"""
+    """Единый обработчик всех текстовых сообщений с улучшенной логикой"""
     # Если пользователь в процессе анкеты — не обрабатываем здесь
     current_state = await state.get_state()
     if current_state is not None:
@@ -381,9 +385,13 @@ async def handle_all_text_messages(message: Message, state: FSMContext):
         
         return  # ВАЖНО: выходим из функции после обработки
 
-    # ОБЫЧНЫЙ РЕЖИМ - обработка через RAG + LLM
-    print(f"🔧 [DEBUG] Обрабатываем как обычный запрос: '{text}'")
+    # ОБЫЧНЫЙ РЕЖИМ - классификация запроса
+    print(f"🔧 [DEBUG] Классифицируем запрос: '{text}'")
     
+    # Классифицируем тип запроса
+    query_type, confidence = query_classifier.classify_query(text)
+    print(f"🔧 [DEBUG] Тип запроса: {query_type}, уверенность: {confidence}")
+
     # Логируем вопрос в БД
     db = SessionLocal()
     user_query = None
@@ -398,60 +406,89 @@ async def handle_all_text_messages(message: Message, state: FSMContext):
         db.refresh(user_query)
     except Exception as e:
         logger.error(f"Ошибка логирования вопроса: {e}")
-    finally:
-        pass  # Не закрываем сессию здесь, используем ниже
 
-    # Отвечаем через RAG + LLM
-    await message.answer("🔎 Ищу ответ на ваш вопрос...")
+    # Определяем стратегию ответа на основе классификации
+    answer = None
+    
+    if query_type == "greeting":
+        answer = chat_responses.get_greeting_response()
+        
+    elif query_type == "about":
+        answer = chat_responses.get_about_response(text)
+        
+    elif query_type == "simple":
+        if any(word in text.lower() for word in ["спасибо", "благодар"]):
+            answer = chat_responses.get_simple_response()
+        elif any(word in text.lower() for word in ["пока", "до свидания"]):
+            answer = chat_responses.get_goodbye_response()
+        else:
+            answer = chat_responses.get_simple_response()
+    
+    elif query_type in ["technical", "general"] and confidence >= query_classifier.get_confidence_threshold(query_type):
+        # Используем RAG + LLM только для технических вопросов с достаточной уверенностью
+        await message.answer("🔎 Ищу информацию в базе знаний...")
+        
+        try:
+            # Поиск в базе знаний
+            contexts = rag_engine.search(text)
+            if not contexts:
+                answer = (
+                    "К сожалению, не нашёл подходящей информации в базе знаний. "
+                    "Для получения точной консультации рекомендую связаться с нашим специалистом."
+                )
+            else:
+                # Формируем контекст и запрос к LLM
+                context = "\n\n".join(contexts[:2])
+                system_prompt = (
+                    "Вы — профессиональный консультант ECOFES по смазочным материалам. "
+                    "ВАЖНО: отвечайте ТОЛЬКО на основе предоставленного контекста. "
+                    "Если в контексте нет точного ответа на вопрос — честно скажите: "
+                    "'В доступной мне информации нет точного ответа на ваш вопрос. "
+                    "Рекомендую обратиться к специалисту для детальной консультации.' "
+                    "НЕ ПРИДУМЫВАЙТЕ информацию. Отвечайте кратко, по существу, на русском языке. "
+                    "Если можете ответить — давайте полезный и точный совет."
+                )
+                full_query = f"Контекст:\n{context}\n\nВопрос клиента: {text}"
 
-    try:
-        # Поиск в базе знаний
-        contexts = rag_engine.search(text)
-        if not contexts:
+                # Получаем ответ от LLM
+                answer = await query_openrouter(system_prompt, full_query)
+
+        except Exception as e:
+            logger.error(f"Ошибка при работе с RAG/LLM: {e}")
             answer = (
-                "К сожалению, не нашёл информации по вашему вопросу. "
-                "Пожалуйста, свяжитесь с менеджером: +7 (800) 700-80-39"
+                "Произошла ошибка при поиске информации. "
+                "Пожалуйста, попробуйте переформулировать вопрос или обратитесь к менеджеру."
             )
-            await message.answer(answer, reply_markup=get_inline_menu())
-            return
+    
+    else:
+        # Для неопределённых запросов или низкой уверенности
+        answer = chat_responses.get_unknown_response()
 
-        # Формируем контекст и запрос к LLM
-        context = "\n\n".join(contexts[:2])
-        system_prompt = (
-            "Вы — точный и честный ассистент ECOFES. "
-            "Отвечайте ТОЛЬКО на основе предоставленного контекста. "
-            "Если в контексте нет ответа — скажите: "
-            "'Я не знаю ответа на этот вопрос, но могу соединить с менеджером'. "
-            "Не выдумывайте информацию. "
-            "Отвечайте кратко и на русском языке."
-        )
-        full_query = f"Контекст:\n{context}\n\nВопрос: {text}"
+    # Сохраняем ответ в БД
+    if user_query and answer:
+        try:
+            user_query.response_text = answer
+            db.commit()
+        except Exception as e:
+            logger.error(f"Ошибка обновления ответа: {e}")
 
-        # Получаем ответ от LLM
-        answer = await query_openrouter(system_prompt, full_query)
-
-        # Сохраняем ответ в БД
-        if user_query:
-            try:
-                user_query.response_text = answer
-                db.commit()
-            except Exception as e:
-                logger.error(f"Ошибка обновления ответа: {e}")
-
-        # Отправляем ответ пользователю
-        await message.answer(answer, reply_markup=get_inline_menu())
-
-    except Exception as e:
-        logger.error(f"Ошибка при генерации ответа: {e}")
+    # Отправляем ответ пользователю
+    if answer:
+        # Для технических вопросов добавляем меню, для простого общения — нет
+        if query_type in ["greeting", "about", "simple"]:
+            keyboard = get_inline_menu() if query_type != "simple" else None
+        else:
+            keyboard = get_inline_menu()
+            
+        parse_mode = "HTML" if "<b>" in answer or "<i>" in answer else None
+        await message.answer(answer, reply_markup=keyboard, parse_mode=parse_mode)
+    else:
         await message.answer(
-            "Произошла ошибка при обработке запроса. "
-            "Пожалуйста, попробуйте позже или свяжитесь с менеджером: +7 (800) 700-80-39",
+            "Извините, возникла проблема с обработкой запроса. "
+            "Попробуйте позже или обратитесь к менеджеру.",
             reply_markup=get_inline_menu()
         )
-    finally:
-        # Закрываем сессию БД
-        if db:
-            db.close()
+
 
 # ========================= ОБРАБОТКА ДРУГИХ ТИПОВ СООБЩЕНИЙ =========================
 
