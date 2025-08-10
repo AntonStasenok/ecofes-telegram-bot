@@ -575,6 +575,9 @@ async def handle_all_text_messages(message: Message, state: FSMContext):
     elif query_type == "selection":
         answer = chat_responses.get_selection_response()
     
+    elif query_type == "catalog":
+        answer = chat_responses.get_catalog_response()
+    
     elif query_type in ["technical", "general"] and confidence >= query_classifier.get_confidence_threshold(query_type):
         # Используем RAG + LLM для технических вопросов с достаточной уверенностью
         await message.answer("🔎 Ищу информацию в базе знаний...")
@@ -636,7 +639,7 @@ async def handle_all_text_messages(message: Message, state: FSMContext):
         # Определяем нужна ли клавиатура
         if query_type in ["greeting", "about"]:
             keyboard = get_inline_menu()
-        elif query_type in ["commercial", "selection"]:
+        elif query_type in ["commercial", "selection", "catalog"]:
             keyboard = get_inline_menu()  # Всегда показываем меню для этих типов
         elif query_type == "simple":
             keyboard = None  # Для простых ответов клавиатура не нужна
