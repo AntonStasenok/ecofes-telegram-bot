@@ -42,29 +42,43 @@ chat_responses = ChatResponses()
 def get_inline_menu():
     """Главное меню бота"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оставить заявку", callback_data="start_lead")],
-        [InlineKeyboardButton(text="Узнать больше", callback_data="show_faq")],
+        [InlineKeyboardButton(text="🔍 Подобрать масло", callback_data="start_selection")],
+        [InlineKeyboardButton(text="📋 Оставить заявку", callback_data="start_lead")],
+        [InlineKeyboardButton(text="ℹ️ Узнать больше", callback_data="show_faq")],
         [InlineKeyboardButton(text="📞 Связаться с менеджером", callback_data="start_support_chat")]
     ])
 
 def get_faq_keyboard():
     """Кнопки под FAQ"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оставить контакты", callback_data="start_lead")],
-        [InlineKeyboardButton(text="Вернуться в меню", callback_data="main_menu")]
+        [InlineKeyboardButton(text="📋 Оставить контакты", callback_data="start_lead")],
+        [InlineKeyboardButton(text="🔍 Подобрать масло", callback_data="start_selection")],
+        [InlineKeyboardButton(text="🏠 Вернуться в меню", callback_data="main_menu")]
     ])
 
 def get_support_menu():
     """Меню поддержки"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📞 Начать чат с менеджером", callback_data="start_support_chat")],
-        [InlineKeyboardButton(text="Вернуться в меню", callback_data="main_menu")]
+        [InlineKeyboardButton(text="🏠 Вернуться в меню", callback_data="main_menu")]
     ])
 
 def get_end_chat_keyboard():
     """Кнопка для завершения чата с поддержкой"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Завершить диалог", callback_data="end_support_chat")]
+    ])
+
+def get_selection_keyboard():
+    """Меню для подбора масла"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚗 Легковой автомобиль", callback_data="select_car")],
+        [InlineKeyboardButton(text="🚛 Грузовик/коммерческий", callback_data="select_truck")],
+        [InlineKeyboardButton(text="🏍️ Мотоцикл", callback_data="select_moto")],
+        [InlineKeyboardButton(text="❄️ Снегоход", callback_data="select_snow")],
+        [InlineKeyboardButton(text="🛥️ Водный транспорт", callback_data="select_water")],
+        [InlineKeyboardButton(text="🏭 Промышленная техника", callback_data="select_industrial")],
+        [InlineKeyboardButton(text="🏠 Вернуться в меню", callback_data="main_menu")]
     ])
 
 # ========================= FSM СОСТОЯНИЯ =========================
@@ -75,6 +89,10 @@ class LeadForm(StatesGroup):
     waiting_for_email = State()
     waiting_for_phone = State()
     waiting_for_industry = State()
+
+class SelectionForm(StatesGroup):
+    """Состояния для подбора масла"""
+    waiting_for_vehicle_info = State()
 
 # ========================= КОМАНДЫ И МЕНЮ =========================
 
@@ -110,6 +128,133 @@ async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
     await state.clear()  # Очищаем состояние
     await callback.message.edit_text("Чем могу помочь?", reply_markup=get_inline_menu())
     await callback.answer()
+
+# ========================= ПОДБОР МАСЛА =========================
+
+@router.callback_query(F.data == "start_selection")
+async def start_selection_callback(callback: CallbackQuery, state: FSMContext):
+    """Запуск подбора масла"""
+    await state.clear()
+    selection_text = (
+        "🔍 <b>Подбор масла ECOFES</b>\n\n"
+        "Выберите тип вашей техники, чтобы получить персональные рекомендации:"
+    )
+    await callback.message.edit_text(selection_text, reply_markup=get_selection_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("select_"))
+async def vehicle_type_callback(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора типа техники"""
+    vehicle_types = {
+        "select_car": "🚗 легкового автомобиля",
+        "select_truck": "🚛 грузового/коммерческого транспорта", 
+        "select_moto": "🏍️ мотоцикла",
+        "select_snow": "❄️ снегохода",
+        "select_water": "🛥️ водного транспорта",
+        "select_industrial": "🏭 промышленной техники"
+    }
+    
+    vehicle_type = vehicle_types.get(callback.data, "техники")
+    
+    await state.update_data(vehicle_type=callback.data)
+    
+    info_text = (
+        f"Отлично! Подбираем масло для {vehicle_type}.\n\n"
+        "Пожалуйста, укажите:\n"
+        "• Марка и модель\n"
+        "• Год выпуска\n"
+        "• Тип двигателя (если знаете)\n"
+        "• Пробег (для авто)\n"
+        "• Условия эксплуатации\n\n"
+        "Чем подробнее информация, тем точнее будет подбор! 📝"
+    )
+    
+    await callback.message.edit_text(info_text, reply_markup=None)
+    await state.set_state(SelectionForm.waiting_for_vehicle_info)
+    await callback.answer()
+
+@router.message(SelectionForm.waiting_for_vehicle_info)
+async def process_vehicle_info(message: Message, state: FSMContext):
+    """Обработка информации о технике и подбор масла"""
+    user_data = await state.get_data()
+    vehicle_info = message.text
+    vehicle_type = user_data.get("vehicle_type", "")
+    
+    await message.answer("🔎 Анализирую информацию и подбираю оптимальное масло...")
+    
+    # Формируем специальный запрос для подбора масла
+    selection_query = f"Подбор масла для {vehicle_info}"
+    
+    try:
+        # Ищем в базе знаний
+        contexts = rag_engine.search(selection_query)
+        
+        if contexts:
+            # Формируем системный промпт для подбора масла
+            system_prompt = (
+                "Вы — эксперт по подбору моторных масел ECOFES. "
+                "На основе предоставленной информации о технике клиента, "
+                "подберите наиболее подходящие масла из ассортимента ECOFES. "
+                "ВАЖНО: рекомендуйте только те продукты, которые есть в контексте. "
+                "Объясните, почему именно эти масла подходят. "
+                "Укажите конкретные марки масел, их характеристики и преимущества. "
+                "Если нужна дополнительная информация — попросите её у клиента."
+            )
+            
+            context = "\n\n".join(contexts[:3])  # Используем больше контекста
+            full_query = (
+                f"Контекст (продукты ECOFES):\n{context}\n\n"
+                f"Информация о технике клиента: {vehicle_info}\n"
+                f"Тип техники: {vehicle_type}\n\n"
+                f"Задача: подобрать оптимальное масло"
+            )
+            
+            # Получаем рекомендацию от LLM
+            recommendation = await query_openrouter(system_prompt, full_query)
+            
+            if recommendation:
+                await message.answer(
+                    f"✅ <b>Рекомендация по подбору масла:</b>\n\n{recommendation}",
+                    parse_mode="HTML",
+                    reply_markup=get_inline_menu()
+                )
+            else:
+                await message.answer(
+                    chat_responses.get_technical_help_response(),
+                    reply_markup=get_inline_menu()
+                )
+        else:
+            # Если в базе ничего не найдено
+            await message.answer(
+                "К сожалению, в базе знаний не нашлось точной информации для вашей техники. "
+                "Для персонального подбора масла рекомендую связаться с нашим специалистом.",
+                reply_markup=get_inline_menu()
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка при подборе масла: {e}")
+        await message.answer(
+            "Произошла ошибка при подборе масла. Пожалуйста, обратитесь к менеджеру для консультации.",
+            reply_markup=get_inline_menu()
+        )
+    
+    # Логируем запрос в БД
+    db = SessionLocal()
+    try:
+        user_query = UserQuery(
+            user_id=message.from_user.id,
+            username=message.from_user.username,
+            query_text=f"Подбор масла: {vehicle_info}",
+            response_text=recommendation if 'recommendation' in locals() else "Ошибка подбора"
+        )
+        db.add(user_query)
+        db.commit()
+    except Exception as e:
+        logger.error(f"Ошибка логирования запроса подбора: {e}")
+    finally:
+        db.close()
+    
+    await state.clear()
 
 # ========================= СБОР ЗАЯВКИ (FSM) =========================
 
@@ -424,35 +569,48 @@ async def handle_all_text_messages(message: Message, state: FSMContext):
         else:
             answer = chat_responses.get_simple_response()
     
+    elif query_type == "commercial":
+        answer = chat_responses.get_commercial_response()
+        
+    elif query_type == "selection":
+        answer = chat_responses.get_selection_response()
+    
     elif query_type in ["technical", "general"] and confidence >= query_classifier.get_confidence_threshold(query_type):
-        # Используем RAG + LLM только для технических вопросов с достаточной уверенностью
+        # Используем RAG + LLM для технических вопросов с достаточной уверенностью
         await message.answer("🔎 Ищу информацию в базе знаний...")
         
         try:
-            # Поиск в базе знаний
-            contexts = rag_engine.search(text)
+            # Улучшенный поиск с ключевыми словами
+            keywords = query_classifier.get_query_keywords(text)
+            search_query = f"{text} {' '.join(keywords)}" if keywords else text
+            
+            contexts = rag_engine.search(search_query)
             if not contexts:
-                answer = (
-                    "К сожалению, не нашёл подходящей информации в базе знаний. "
-                    "Для получения точной консультации рекомендую связаться с нашим специалистом."
-                )
+                answer = chat_responses.get_technical_help_response()
             else:
                 # Формируем контекст и запрос к LLM
-                context = "\n\n".join(contexts[:2])
+                context = "\n\n".join(contexts[:3])  # Используем больше контекста
                 system_prompt = (
-                    "Вы — профессиональный консультант по продажам компании  ECOFES - российского производителя высококачественных смазочных материалов, специализирующийся на разработке и производстве моторных масел, трансмиссионных жидкостей, гидравлических масел и других смазочных материалов для автомобильной и промышленной техники."
+                    "Вы — профессиональный консультант по продажам компании ECOFES — российского производителя "
+                    "высококачественных смазочных материалов, специализирующегося на разработке и производстве "
+                    "моторных масел, трансмиссионных жидкостей, гидравлических масел и других смазочных материалов "
+                    "для автомобильной и промышленной техники.\n\n"
                     "ВАЖНО: отвечайте ТОЛЬКО на основе предоставленного контекста. "
                     "Если в контексте нет точного ответа на вопрос — честно скажите: "
                     "'В доступной мне информации нет точного ответа на ваш вопрос. "
-                    "Рекомендую обратиться к специалисту для детальной консультации.' "
+                    "Рекомендую обратиться к специалисту для детальной консультации.'\n\n"
                     "НЕ ПРИДУМЫВАЙТЕ информацию. Отвечайте развернуто, но по существу, на русском языке. "
-                    "Если можете ответить — давайте полезный и точный совет."
-                    "ВАЖНО: НЕ ВЫДУМЫВАЙТЕ информацию. Если в контексте нет ответа — скажите об этом."
+                    "Если можете ответить — давайте полезный и точный совет. "
+                    "Указывайте конкретные названия продуктов ECOFES, их характеристики и области применения."
                 )
-                full_query = f"Контекст:\n{context}\n\nВопрос клиента: {text}"
+                
+                full_query = f"Контекст (база знаний ECOFES):\n{context}\n\nВопрос клиента: {text}"
 
                 # Получаем ответ от LLM
                 answer = await query_openrouter(system_prompt, full_query)
+                
+                if not answer or "нет точного ответа" in answer.lower():
+                    answer = chat_responses.get_technical_help_response()
 
         except Exception as e:
             logger.error(f"Ошибка при работе с RAG/LLM: {e}")
@@ -475,11 +633,15 @@ async def handle_all_text_messages(message: Message, state: FSMContext):
 
     # Отправляем ответ пользователю
     if answer:
-        # Для технических вопросов добавляем меню, для простого общения — нет
-        if query_type in ["greeting", "about", "simple"]:
-            keyboard = get_inline_menu() if query_type != "simple" else None
-        else:
+        # Определяем нужна ли клавиатура
+        if query_type in ["greeting", "about"]:
             keyboard = get_inline_menu()
+        elif query_type in ["commercial", "selection"]:
+            keyboard = get_inline_menu()  # Всегда показываем меню для этих типов
+        elif query_type == "simple":
+            keyboard = None  # Для простых ответов клавиатура не нужна
+        else:
+            keyboard = get_inline_menu()  # По умолчанию показываем меню
             
         parse_mode = "HTML" if "<b>" in answer or "<i>" in answer else None
         await message.answer(answer, reply_markup=keyboard, parse_mode=parse_mode)
@@ -489,6 +651,9 @@ async def handle_all_text_messages(message: Message, state: FSMContext):
             "Попробуйте позже или обратитесь к менеджеру.",
             reply_markup=get_inline_menu()
         )
+
+    # Закрываем соединение с БД
+    db.close()
 
 
 # ========================= ОБРАБОТКА ДРУГИХ ТИПОВ СООБЩЕНИЙ =========================
