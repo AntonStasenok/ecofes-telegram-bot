@@ -8,6 +8,10 @@ import time
 from typing import List
 import urllib3
 
+tr_text = 1000
+chunk_size = 200
+n_res = 3
+
 # Отключаем предупреждения о непроверенном SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -64,7 +68,7 @@ class RAGEngine:
             "Accept": "application/json"
         }
         # Усекаем и ограничиваем текст
-        truncated_text = text[:500]  # Ограничение по символам
+        truncated_text = text[:tr_text]  # Ограничение по символам
         payload = {
             "model": "Embeddings",
             "input": [truncated_text]
@@ -83,7 +87,7 @@ class RAGEngine:
 
         except requests.exceptions.HTTPError as e:
             if response.status_code == 413:
-                print(f"❌ Текст слишком длинный для GigaChat: '{text[:50]}...'")
+                print(f"❌ Текст слишком длинный для GigaChat: '{text[:500]}...'")
             else:
                 print(f"❌ Ошибка {response.status_code}: {response.text}")
             raise
@@ -91,7 +95,7 @@ class RAGEngine:
             print(f"❌ Неизвестная ошибка: {e}")
             raise
 
-    def _split_text(self, text: str, chunk_size: int = 100) -> List[str]:
+    def _split_text(self, text: str, chunk_size: int = chunk_size) -> List[str]:
         """Разбивает текст на чанки по количеству слов"""
         words = text.split()
         return [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
@@ -110,6 +114,7 @@ class RAGEngine:
         documents = []
         metadatas = []
         ids = []
+        debug_file = dict()
 
         for file_path in doc_files:
             try:
@@ -119,18 +124,19 @@ class RAGEngine:
                         print(f"⚠️ Пропускаем пустой файл: {file_path}")
                         continue
 
-                    chunks = self._split_text(content, chunk_size=150)  # Безопасный размер
+                    chunks = self._split_text(content, chunk_size=chunk_size)  # Безопасный размер
                     print(f"✂️ Файл {os.path.basename(file_path)} разбит на {len(chunks)} чанков")
 
                     for i, chunk in enumerate(chunks):
                         doc_id = f"{os.path.basename(file_path)}_{i}"
                         # Проверка длины чанка перед добавлением
-                        if len(chunk) > 2000:
+                        if len(chunk) > tr_text*2:
                             print(f"⚠️ Чанк {doc_id} слишком длинный ({len(chunk)} символов), пропускаем")
                             continue
                         documents.append(chunk)
                         metadatas.append({"source": file_path})
                         ids.append(doc_id)
+                        debug_file[i] = [file_path,chunk]
             except Exception as e:
                 print(f"❌ Ошибка чтения {file_path}: {e}")
 
@@ -155,7 +161,7 @@ class RAGEngine:
         else:
             print("❌ НЕТ документов для индексации.")
 
-    def search(self, query: str, n_results: int = 3) -> List[str]:
+    def search(self, query: str, n_results: int = n_res) -> List[str]:
         """Поиск по запросу"""
         try:
             query_embedding = self._get_embedding(query)

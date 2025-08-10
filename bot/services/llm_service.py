@@ -96,12 +96,12 @@ def filter_and_improve_answer(answer: str) -> str:
             )
     
     # Ограничиваем длину ответа
-    if len(answer) > 800:
+    if len(answer) > 1500:
         # Обрезаем по последнему предложению
         sentences = answer.split('.')
         truncated = ""
         for sentence in sentences:
-            if len(truncated + sentence + ".") <= 700:
+            if len(truncated + sentence + ".") <= 1400:
                 truncated += sentence + "."
             else:
                 break
@@ -109,7 +109,7 @@ def filter_and_improve_answer(answer: str) -> str:
         if truncated:
             answer = truncated + "\n\nДля получения более подробной информации обратитесь к специалисту."
         else:
-            answer = answer[:700] + "...\n\nДля подробной консультации звоните: +7 (800) 700-80-39"
+            answer = answer[:1400] + "...\n\nДля подробной консультации звоните: +7 (800) 700-80-39"
     
     # Добавляем призыв к действию для технических вопросов
     if any(word in answer_lower for word in ["масло", "двигатель", "вязкость", "замена"]):
